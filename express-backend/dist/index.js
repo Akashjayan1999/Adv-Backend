@@ -14,16 +14,21 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const redis_1 = require("redis");
+const http_1 = require("http");
+const ws_1 = require("ws");
 const client = (0, redis_1.createClient)({ url: "redis://localhost:6379" });
+const subClient = (0, redis_1.createClient)({ url: "redis://localhost:6379" }); // Subscriber client
 client.on("error", (err) => {
     console.error("Redis Client Error", err);
+});
+subClient.on("error", (err) => {
+    console.error("Redis Sub Client Error", err);
 });
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
 app.post("/submit", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { problemId, userId, code, language } = req.body;
-        //push this to a database prisma,submission.create();
         yield client.lPush("submissions", JSON.stringify({ problemId, userId, code, language }));
         res.status(201).json({ message: "Submission received" });
     }
@@ -32,14 +37,30 @@ app.post("/submit", (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         res.status(500).json({ error: "Internal Server Error" });
     }
 }));
+const server = (0, http_1.createServer)(app);
+const wss = new ws_1.WebSocketServer({ server });
+wss.on("connection", (ws) => {
+    console.log("WebSocket client connected");
+});
 function startServer() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
             yield client.connect();
+            yield subClient.connect();
             console.log("Connected to Redis");
+            // Subscribe to the processed submissions channel from the worker
+            yield subClient.subscribe("submission_processed", (message) => {
+                // Broadcast to all connected WebSocket clients
+                wss.clients.forEach((client) => {
+                    if (client.readyState === client.OPEN) {
+                        client.send(message);
+                    }
+                });
+                console.log("Broadcasted to WebSocket clients:", message);
+            });
             const port = 8080;
-            app.listen(port, () => {
-                console.log(`Server is running on http://localhost:${port}`);
+            server.listen(port, () => {
+                console.log(`Server and WebSocket running on http://localhost:${port}`);
             });
         }
         catch (error) {
